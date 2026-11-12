@@ -1,0 +1,1 @@
+puzzle_order|a:4:{i:0;i:0;i:1;i:2;i:2;i:3;i:3;i:1;}puzzle_solved|b:0;csrf|s:64:"3252a90b257718479c5b75d62283d6c0dcf299e039d5f1b71af52e4bc737e000";user|a:7:{s:7:"user_id";i:1;s:5:"login";s:5:"admin";s:10:"first_name";s:10:"Админ";s:11:"middle_name";s:0:"";s:9:"last_name";s:14:"Главный";s:5:"email";s:13:"admin@test.ru";s:4:"role";s:5:"admin";}just_logged_in|b:1;
