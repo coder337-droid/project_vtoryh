@@ -1,52 +1,41 @@
 <?php
 declare(strict_types=1);
 
-require_once __DIR__ . '/../src/bootstrap.php';
-require_once __DIR__ . '/../src/functions.php';
+require_once __DIR__ . '/../src/auth.php';
 
+$pdo    = db();
 $errors = [];
 $login  = '';
+$lock   = ['locked' => false, 'minutes' => 0];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check($_POST['csrf'] ?? null);
 
     $login    = strtolower(trim((string)($_POST['login'] ?? '')));
     $password = (string)($_POST['password'] ?? '');
-    
-    $isTestMode   = isset($_GET['test_mode']) && $_GET['test_mode'] === '1';
-    $puzzleSolved = $isTestMode ? true : (($_POST['puzzle_solved'] ?? '') === '1');
+    $lock     = auth_lock_state($pdo, $login);
 
-    if ($login === '' || $password === '') {
+    if ($lock['locked']) {
+        $errors[] = 'Слишком много неудачных попыток входа.';
+    } elseif ($login === '' || $password === '') {
         $errors[] = 'Введите логин и пароль';
-    } elseif (!$puzzleSolved) {
-        $errors[] = 'Соберите капчу';
+    } elseif (!captcha_verify()) {
+        $errors[] = 'Пазл не собран. Нажмите фрагменты в порядке образца.';
     } else {
-        if ($login === 'admin' && $password === 'admin') {
-            session_regenerate_id(true);
-            
-            $_SESSION['user'] = [
-                'user_id'     => 1,
-                'login'       => 'admin',
-                'first_name'  => 'Админ',
-                'middle_name' => '',
-                'last_name'   => 'Главный',
-                'email'       => 'admin@test.ru',
-                'role'        => 'admin',
-            ];
-            $_SESSION['just_logged_in'] = true;
-
+        [$ok, $err, $row] = auth_attempt($pdo, $login, $password);
+        if ($ok) {
+            auth_start_session($pdo, $row);
             header('Location: admin_users.php');
             exit;
-        } else {
-            $errors[] = 'Неверный логин или пароль (используйте admin/admin)';
         }
+        $errors[] = $err;
+        $lock = auth_lock_state($pdo, $login);
     }
 }
 
-$order = puzzle_generate();
-$isTest = isset($_GET['test_mode']) && $_GET['test_mode'] === '1';
-$isLocked = false;
-$puzzleSolved = false;
-$testReport = null;
+$order       = captcha_issue();
+$isLocked    = $lock['locked'];
+$lockMinutes = $lock['minutes'];
+$isTest      = auth_test_mode();
 
 require __DIR__ . '/../templates/login.view.php';

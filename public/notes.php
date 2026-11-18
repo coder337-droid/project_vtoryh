@@ -2,11 +2,11 @@
 declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
-
+header('X-Content-Type-Options: nosniff');
 error_reporting(E_ALL);
 ini_set('display_errors', '0');
 
-require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../src/functions.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     http_response_code(405);
@@ -15,9 +15,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 }
 
 $userId = $_GET['user_id'] ?? null;
-
 if ($userId !== null) {
-    if (!ctype_digit((string)$userId)) {
+    if (!is_scalar($userId) || !ctype_digit((string)$userId) || (int)$userId <= 0) {
         http_response_code(400);
         echo json_encode(['error' => 'Параметр user_id должен быть целым положительным числом'], JSON_UNESCAPED_UNICODE);
         exit;
@@ -29,16 +28,13 @@ try {
     $pdo = db();
 
     $sql = "SELECT n.id, n.title, n.content, n.created_at, u.login
-            FROM notes n
-            LEFT JOIN users u ON u.user_id = n.id_user";
-
+              FROM notes n
+              LEFT JOIN users u ON u.user_id = n.id_user";
     $params = [];
-
     if ($userId !== null) {
         $sql .= " WHERE n.id_user = :uid";
         $params[':uid'] = $userId;
     }
-
     $sql .= " ORDER BY n.created_at DESC";
 
     $stmt = $pdo->prepare($sql);
@@ -46,7 +42,6 @@ try {
     $rows = $stmt->fetchAll();
 
     $notes = [];
-
     foreach ($rows as $row) {
         $formatted = '';
         if (!empty($row['created_at'])) {
@@ -55,9 +50,7 @@ try {
                 $formatted = date('d.m.Y', $ts);
             }
         }
-
         $login = $row['login'] ?? 'unknown';
-
         $notes[] = [
             'id'             => (int)$row['id'],
             'title_user'     => $row['title'] . ' - ' . $login,
@@ -68,12 +61,10 @@ try {
 
     http_response_code(200);
     echo json_encode($notes, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-
 } catch (PDOException $e) {
     error_log('API notes DB error: ' . $e->getMessage());
     http_response_code(500);
     echo json_encode(['error' => 'Ошибка подключения к базе данных'], JSON_UNESCAPED_UNICODE);
-
 } catch (Throwable $e) {
     error_log('API notes error: ' . $e->getMessage());
     http_response_code(500);

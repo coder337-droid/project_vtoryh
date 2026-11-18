@@ -1,0 +1,157 @@
+{
+    "info": {
+        "name": "Notes API — проект project_vtoryh",
+        "description": "Коллекция тестов для API заметок",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "1. 200 OK — список заметок",
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Status 200', function () { pm.response.to.have.status(200); });",
+                            "pm.test('JSON валиден', function () { pm.response.to.be.json; });",
+                            "pm.test('Есть поля id, title_user, content, formatted_date', function () {",
+                            "    const d = pm.response.json();",
+                            "    if (Array.isArray(d) && d.length > 0) {",
+                            "        pm.expect(d[0]).to.have.property('id');",
+                            "        pm.expect(d[0]).to.have.property('title_user');",
+                            "        pm.expect(d[0]).to.have.property('content');",
+                            "        pm.expect(d[0]).to.have.property('formatted_date');",
+                            "    }",
+                            "});"
+                        ]
+                    }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "http://localhost/project_vtoryh/api/notes.php",
+                    "protocol": "http",
+                    "host": ["localhost"],
+                    "path": ["project_vtoryh", "api", "notes.php"]
+                }
+            }
+        },
+        {
+            "name": "2. 400 Bad Request — неверный user_id",
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Status 400', function () { pm.response.to.have.status(400); });",
+                            "pm.test('JSON валиден', function () { pm.response.to.be.json; });",
+                            "pm.test('Есть поле error', function () {",
+                            "    pm.expect(pm.response.json()).to.have.property('error');",
+                            "});"
+                        ]
+                    }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "http://localhost/project_vtoryh/api/notes.php?user_id=abc",
+                    "protocol": "http",
+                    "host": ["localhost"],
+                    "path": ["project_vtoryh", "api", "notes.php"],
+                    "query": [
+                        { "key": "user_id", "value": "abc" }
+                    ]
+                }
+            }
+        },
+        {
+            "name": "3. 200 OK — пустой массив (нет заметок)",
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Status 200', function () { pm.response.to.have.status(200); });",
+                            "pm.test('Пустой массив', function () {",
+                            "    const d = pm.response.json();",
+                            "    pm.expect(d).to.be.an('array');",
+                            "    pm.expect(d.length).to.eql(0);",
+                            "});"
+                        ]
+                    }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "http://localhost/project_vtoryh/api/notes.php?user_id=999",
+                    "protocol": "http",
+                    "host": ["localhost"],
+                    "path": ["project_vtoryh", "api", "notes.php"],
+                    "query": [
+                        { "key": "user_id", "value": "999" }
+                    ]
+                }
+            }
+        },
+        {
+            "name": "4. Фильтр по user_id=1 (200)",
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Status 200', function () { pm.response.to.have.status(200); });",
+                            "pm.test('JSON массив', function () { pm.response.to.be.json; });"
+                        ]
+                    }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "http://localhost/project_vtoryh/api/notes.php?user_id=1",
+                    "protocol": "http",
+                    "host": ["localhost"],
+                    "path": ["project_vtoryh", "api", "notes.php"],
+                    "query": [
+                        { "key": "user_id", "value": "1" }
+                    ]
+                }
+            }
+        },
+        {
+            "name": "5. 500 Internal Server Error (тест на сбой)",
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Status 500', function () { pm.response.to.have.status(500); });",
+                            "pm.test('JSON валиден', function () { pm.response.to.be.json; });",
+                            "pm.test('Есть error', function () {",
+                            "    pm.expect(pm.response.json()).to.have.property('error');",
+                            "});"
+                        ]
+                    }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "http://localhost/project_vtoryh/api/notes.php",
+                    "protocol": "http",
+                    "host": ["localhost"],
+                    "path": ["project_vtoryh", "api", "notes.php"]
+                }
+            }
+        }
+    ]
+}

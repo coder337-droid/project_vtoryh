@@ -1,157 +1,153 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/../src/bootstrap.php';
+require_once __DIR__ . '/../src/functions.php';
+
 header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store, private');
+header('X-Content-Type-Options: nosniff');
 
-// Засекаем время старта для расчета Ping сайта
-$startTime = microtime(true);
+if (($_SESSION['user']['role'] ?? '') !== 'admin') {
+    http_response_code(401);
+    echo json_encode(['error' => 'Требуется вход администратора'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 
-// ==========================================
-// НАСТРОЙКИ ПОДКЛЮЧЕНИЯ К БД
-// ==========================================
-$dbHost = '127.0.0.1';
-$dbName = 'test_projectvtor';
-$dbUser = 'phpuser'; 
-$dbPass = 'php123';  
+$t0        = microtime(true);
+$storage   = __DIR__ . '/../storage';
+$cacheFile = $storage . '/monitor_cache.json';
+$netFile   = $storage . '/monitor_net.json';
 
-$pdo = null;
-$dbPingMs = 0;
-$dbVersion = 'Ошибка подключения';
-$dbTables = 0;
-$dbSizeMb = 0;
-$usersCount = 0;
+if (is_file($cacheFile) && (time() - (int)filemtime($cacheFile)) < 2) {
+    readfile($cacheFile);
+    exit;
+}
 
-try {
-    $dbStartTime = microtime(true);
-    $pdo = new PDO("mysql:host=$dbHost;dbname=$dbName;charset=utf8mb4", $dbUser, $dbPass, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
-    
-    $dbVersion = $pdo->query("SELECT VERSION()")->fetchColumn();
-    $dbTables = $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$dbName'")->fetchColumn();
-    $dbSizeMb = round((float)$pdo->query("SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema = '$dbName'")->fetchColumn() / 1048576, 2);
-    $usersCount = $pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
-    
-    $dbEndTime = microtime(true);
-    $dbPingMs = round(($dbEndTime - $dbStartTime) * 1000, 2);
-} catch (Exception $e) { /* Ошибка БД */ }
+/* Сеть: разница с предыдущим замером — без блокирующего usleep */
+function monitor_net_sample(): array
+{
+    $s = ['rx' => 0, 'tx' => 0];
+    if (!is_readable('/proc/net/dev')) return $s;
+    foreach ((array)file('/proc/net/dev') as $line) {
+        if (strpos($line, ':') === false) continue;
+        [$name, $rest] = explode(':', $line, 2);
+        if (trim($name) === 'lo') continue;
+        $p = preg_split('/\s+/', trim($rest));
+        $s['rx'] += (int)($p[0] ?? 0);
+        $s['tx'] += (int)($p[8] ?? 0);
+    }
+    return $s;
+}
 
-// ==========================================
-// 1. СЕТЬ
-// ==========================================
-function getNetworkSpeed(): array {
-    $readFile = function() {
-        $data = [];
-        if (!is_readable('/proc/net/dev')) return [];
-        $lines = file('/proc/net/dev');
+$now  = microtime(true);
+$cur  = monitor_net_sample();
+$prev = is_file($netFile) ? json_decode((string)file_get_contents($netFile), true) : null;
+$rx = 0.0; $tx = 0.0;
+if (is_array($prev) && isset($prev['t'], $prev['rx'], $prev['tx'])) {
+    $dt = $now - (float)$prev['t'];
+    if ($dt > 0.2) {
+        $rx = max(0, ($cur['rx'] - (int)$prev['rx']) / $dt / 1024);
+        $tx = max(0, ($cur['tx'] - (int)$prev['tx']) / $dt / 1024);
+    }
+}
+@file_put_contents($netFile, json_encode(['t' => $now, 'rx' => $cur['rx'], 'tx' => $cur['tx']]));
+
+/* Память */
+$memTotal = 0; $memAvail = 0;
+if (is_readable('/proc/meminfo')) {
+    $mi = (string)file_get_contents('/proc/meminfo');
+    if (preg_match('/MemTotal:\s+(\d+)/', $mi, $m))     $memTotal = (int)$m[1] * 1024;
+    if (preg_match('/MemAvailable:\s+(\d+)/', $mi, $m)) $memAvail = (int)$m[1] * 1024;
+}
+$memUsed    = max(0, $memTotal - $memAvail);
+$memPercent = $memTotal > 0 ? (int)round($memUsed / $memTotal * 100) : 0;
+
+/* Диск */
+$diskTotal   = (float)@disk_total_space('/');
+$diskFree    = (float)@disk_free_space('/');
+$diskUsed    = max(0, $diskTotal - $diskFree);
+$diskPercent = $diskTotal > 0 ? (int)round($diskUsed / $diskTotal * 100) : 0;
+
+/* CPU и uptime */
+$cores = 1;
+if (is_readable('/proc/cpuinfo')) {
+    $cores = max(1, substr_count((string)file_get_contents('/proc/cpuinfo'), 'processor'));
+}
+$load = function_exists('sys_getloadavg') ? sys_getloadavg() : false;
+$cpu  = is_array($load) ? (int)min(100, round(((float)$load[0] / $cores) * 100)) : 0;
+
+$uptimeStr = '—';
+if (is_readable('/proc/uptime')) {
+    $sec = (int)explode(' ', (string)file_get_contents('/proc/uptime'))[0];
+    $d = intdiv($sec, 86400); $h = intdiv($sec % 86400, 3600); $m = intdiv($sec % 3600, 60);
+    $uptimeStr = ($d > 0 ? "{$d} д. " : '') . "{$h} ч. {$m} мин.";
+}
+
+/* Топ процессов */
+$top = [];
+$disabled = array_map('trim', explode(',', (string)ini_get('disable_functions')));
+if (function_exists('shell_exec') && !in_array('shell_exec', $disabled, true)) {
+    $ps = @shell_exec('ps -eo comm,%cpu,%mem --sort=-%cpu 2>/dev/null | head -n 6');
+    if (is_string($ps) && trim($ps) !== '') {
+        $lines = explode("\n", trim($ps));
+        array_shift($lines);
         foreach ($lines as $line) {
-            if (strpos($line, ':') !== false && strpos($line, 'lo:') === false) {
-                $parts = preg_split('/\s+/', trim($line));
-                if (isset($parts[1]) && isset($parts[9])) {
-                    $data[] = ['rx' => (int)$parts[1], 'tx' => (int)$parts[9]];
-                }
+            $p = preg_split('/\s+/', trim($line));
+            if (count($p) >= 3) {
+                $top[] = ['name' => $p[0], 'cpu' => (float)$p[1], 'mem' => (float)$p[2]];
             }
         }
-        return $data;
-    };
-
-    $start = $readFile();
-    $t1 = microtime(true);
-    usleep(100000); 
-    $end = $readFile();
-    $t2 = microtime(true);
-
-    $diff = $t2 - $t1;
-    $rx = 0; $tx = 0;
-    foreach ($end as $i => $d) {
-        if (isset($start[$i])) {
-            $rx += $d['rx'] - $start[$i]['rx'];
-            $tx += $d['tx'] - $start[$i]['tx'];
-        }
-    }
-    return ['rx' => round(($rx / $diff) / 1024, 1), 'tx' => round(($tx / $diff) / 1024, 1)];
-}
-$netSpeed = getNetworkSpeed();
-
-// ==========================================
-// 2. ПАМЯТЬ И ДИСК
-// ==========================================
-$memTotal = 0; $memFree = 0;
-if (is_readable('/proc/meminfo')) {
-    $memInfo = file_get_contents('/proc/meminfo');
-    if (preg_match('/MemTotal:\s+(\d+)/', $memInfo, $m)) $memTotal = $m[1] * 1024;
-    if (preg_match('/MemAvailable:\s+(\d+)/', $memInfo, $m)) $memFree = $m[1] * 1024;
-}
-$memUsed = $memTotal - $memFree;
-$memPercent = $memTotal > 0 ? round(($memUsed / $memTotal) * 100) : 0;
-
-$diskTotal = disk_total_space("/");
-$diskFree  = disk_free_space("/");
-$diskUsed  = $diskTotal - $diskFree;
-$diskPercent = $diskTotal > 0 ? round(($diskUsed / $diskTotal) * 100) : 0;
-
-// ==========================================
-// 3. ПРОЦЕССОР, UPTIME И ТОП ПРОЦЕССОВ
-// ==========================================
-$cpuLoad = sys_getloadavg();
-$cpuCores = 1;
-if (is_readable('/proc/cpuinfo')) {
-    $cpuCores = substr_count(file_get_contents('/proc/cpuinfo'), 'processor');
-}
-if ($cpuCores < 1) $cpuCores = 1;
-$cpuPercent = min(100, round(($cpuLoad[0] / $cpuCores) * 100));
-
-$uptimeSeconds = (int)explode(' ', file_get_contents('/proc/uptime'))[0];
-$days = floor($uptimeSeconds / 86400);
-$hours = floor(($uptimeSeconds % 86400) / 3600);
-$minutes = floor(($uptimeSeconds % 3600) / 60);
-$uptimeStr = ($days > 0 ? "$days д. " : "") . "$hours ч. $minutes мин.";
-
-// Получаем ТОП-5 процессов по памяти (используем ps)
-$topProcesses = [];
-$psOutput = shell_exec("ps -eo comm,%cpu,%mem --sort=-%cpu | head -n 6");
-if ($psOutput) {
-    $lines = explode("\n", trim($psOutput));
-    array_shift($lines); // Удаляем заголовок
-    foreach ($lines as $line) {
-        $parts = preg_split('/\s+/', trim($line));
-        if (count($parts) >= 3) {
-            $topProcesses[] = [
-                'name' => $parts[0],
-                'cpu'  => (float)$parts[1],
-                'mem'  => (float)$parts[2]
-            ];
-        }
     }
 }
 
-// ==========================================
-// 4. ПИНГ САЙТА
-// ==========================================
-$sitePingMs = round((microtime(true) - $startTime) * 1000, 2);
+/* БД — креды из .env, а не зашитые */
+$dbVersion = null; $dbTables = 0; $dbSizeMb = 0.0; $dbUsers = 0;
+$dbPing = 0.0; $dbError = null;
+try {
+    $pdo = db();
+    $tdb = microtime(true);
+    $dbVersion = (string)$pdo->query('SELECT VERSION()')->fetchColumn();
+    $schema    = (string)$pdo->query('SELECT DATABASE()')->fetchColumn();
 
-// ==========================================
-// ВЫВОД JSON
-// ==========================================
-echo json_encode([
-    'cpu' => $cpuPercent,
-    'cpu_cores' => $cpuCores,
-    'mem_percent' => $memPercent,
-    'mem_used_gb' => round($memUsed / 1073741824, 1),
-    'mem_total_gb' => round($memTotal / 1073741824, 1),
-    'disk_percent' => $diskPercent,
-    'disk_used_gb' => round($diskUsed / 1073741824, 1),
-    'disk_total_gb' => round($diskTotal / 1073741824, 1),
-    'uptime' => $uptimeStr,
-    'net_rx_kb' => $netSpeed['rx'],
-    'net_tx_kb' => $netSpeed['tx'],
-    'db_size_mb' => $dbSizeMb,
-    'db_users' => $usersCount,
-    'db_tables' => $dbTables,
-    'db_version' => $dbVersion,
-    'db_ping_ms' => $dbPingMs,
-    'site_ping_ms' => $sitePingMs,
-    'top_processes' => $topProcesses, // Новое поле
-    'timestamp' => date('H:i:s')
-]);
+    $q = $pdo->prepare('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ?');
+    $q->execute([$schema]);
+    $dbTables = (int)$q->fetchColumn();
+
+    $q = $pdo->prepare('SELECT COALESCE(SUM(data_length + index_length),0)
+                        FROM information_schema.tables WHERE table_schema = ?');
+    $q->execute([$schema]);
+    $dbSizeMb = round((float)$q->fetchColumn() / 1048576, 2);
+
+    $dbUsers = (int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+    $dbPing  = round((microtime(true) - $tdb) * 1000, 2);
+} catch (Throwable $e) {
+    error_log('monitor db: ' . $e->getMessage());
+    $dbError = 'Нет данных БД — проверьте .env и права пользователя';
+}
+
+$json = json_encode([
+    'cpu'            => $cpu,
+    'cpu_cores'      => $cores,
+    'mem_percent'    => $memPercent,
+    'mem_used_gb'    => round($memUsed / 1073741824, 1),
+    'mem_total_gb'   => round($memTotal / 1073741824, 1),
+    'disk_percent'   => $diskPercent,
+    'disk_used_gb'   => round($diskUsed / 1073741824, 1),
+    'disk_total_gb'  => round($diskTotal / 1073741824, 1),
+    'uptime'         => $uptimeStr,
+    'net_rx_kb'      => round($rx, 1),
+    'net_tx_kb'      => round($tx, 1),
+    'db_size_mb'     => $dbSizeMb,
+    'db_users'       => $dbUsers,
+    'db_tables'      => $dbTables,
+    'db_version'     => $dbVersion,
+    'db_ping_ms'     => $dbPing,
+    'db_error'       => $dbError,
+    'site_ping_ms'   => round((microtime(true) - $t0) * 1000, 2),
+    'top_processes'  => $top,
+    'timestamp'      => date('H:i:s'),
+], JSON_UNESCAPED_UNICODE);
+
+@file_put_contents($cacheFile, $json);
+echo $json;

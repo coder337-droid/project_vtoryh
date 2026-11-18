@@ -1,0 +1,6 @@
+storage/backups/
+storage/sessions/
+storage/logs/
+storage/monitor_*.json
+composer.phar
+tests_and_tools/chrome*
